@@ -1191,8 +1191,30 @@ async def main():
     logger.info(f"Process ID: {os.getpid()}")
 
     # Start the bot
-    try:
-        logger.info("Starting bot...")
+async def main() -> None:
+"""Main entry point for the bot application."""
+try:
+    logger.info("Starting bot...")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Keep the application running
+    while True:
+        await asyncio.sleep(1)
+        
+except Exception as e:
+    logger.error(f"Error in main: {str(e)}", exc_info=True)
+    raise
+    
+finally:
+    logger.info("Shutting down bot...")
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+
+if __name__ == "__main__":
+asyncio.run(main())
         logger.info(f"Using token: {TELEGRAM_BOT_TOKEN}")
         logger.info(f"Database URL: {DATABASE_URL}")
         
