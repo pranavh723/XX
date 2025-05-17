@@ -14,8 +14,9 @@ from telegram.ext import (
     filters,
     MessageHandler
 )
-from telegram.error import BadRequest, TimedOut, NetworkError
+from telegram.error import BadRequest, TimedOut, NetworkError, Conflict
 from dotenv import load_dotenv
+import time
 
 # Add project root to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -166,17 +167,38 @@ finally:
 # All models and utilities have been imported above
 
 
-# Create the Application
-application = (
-    Application.builder()
-    .token(TELEGRAM_BOT_TOKEN)
-    .read_timeout(30)
-    .write_timeout(30)
-    .connect_timeout(30)
-    .pool_timeout(30)
-    .get_updates_connection_pool_size(10)
-    .build()
-)
+# Create the Application with enhanced conflict handling
+def create_application_with_retry():
+    """Create application with retry logic for conflicts"""
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            app = (
+                Application.builder()
+                .token(TELEGRAM_BOT_TOKEN)
+                .read_timeout(30)
+                .write_timeout(30)
+                .connect_timeout(30)
+                .pool_timeout(30)
+                .get_updates_connection_pool_size(10)
+                .build()
+            )
+            return app
+        except Conflict as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"Conflict detected (attempt {attempt + 1}/{max_retries}): {e}")
+            logger.info(f"Waiting {retry_delay} seconds before retry...")
+            time.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
+            logger.warning(f"Conflict detected (attempt {attempt + 1}/{max_retries}): {e}")
+            logger.info(f"Waiting {retry_delay} seconds before retry...")
+            time.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
+
+application = create_application_with_retry()
 
 # Add command handlers with rate limiting and validation
 command_handlers = {
@@ -1114,10 +1136,11 @@ logger.info("Button handler registered successfully")
 
 # Add error handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors caused by updates."""
+    """Log errors caused by updates with enhanced conflict handling."""
     try:
+        error = context.error
         # Log the error
-        logger.error(f'Update {update} caused error: {context.error}')
+        logger.error(f'Update {update} caused error: {error}')
         
         # Get user ID for logging if available
         user_id = None
@@ -1127,15 +1150,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Handle specific errors
         error_message = "An error occurred. Please try again later."
-        if isinstance(context.error, BadRequest):
-            logger.error(f"Bad request error: {str(context.error)}")
+        if isinstance(error, BadRequest):
+            logger.error(f"Bad request error: {str(error)}")
             error_message = "Invalid request. Please try again."
-        elif isinstance(context.error, TimedOut):
-            logger.error(f"Timeout error: {str(context.error)}")
+        elif isinstance(error, TimedOut):
+            logger.error(f"Timeout error: {str(error)}")
             error_message = "Request timed out. Please try again."
-        elif isinstance(context.error, NetworkError):
-            logger.error(f"Network error: {str(context.error)}")
+        elif isinstance(error, NetworkError):
+            logger.error(f"Network error: {str(error)}")
             error_message = "Network error. Please check your connection."
+        elif isinstance(error, Conflict):
+            logger.warning("Bot conflict detected - another instance may be running")
+            # Try to release resources and restart
+            try:
+                await application.stop()
+                await application.initialize()
+                await application.start()
+                logger.info("Bot restarted after conflict")
+                return  # Skip normal error handling after successful restart
+            except Exception as e:
+                logger.error(f"Failed to restart after conflict: {e}")
+                error_message = "System error. Please try again later."
         
         # Send error notification to user
         try:
